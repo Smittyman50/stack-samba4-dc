@@ -57,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf /tmp/infra-platform
-          git clone --depth 1 --branch v0.1.0 "http://gitgard.home.arpa:3000/smittyman/infra-platform.git" /tmp/infra-platform
+          git clone --depth 1 --branch v0.1.3 "http://gitgard.home.arpa:3000/smittyman/infra-platform.git" /tmp/infra-platform
           rm -rf ansible/roles/base
           mkdir -p ansible/roles
           cp -a /tmp/infra-platform/ansible/roles/base ansible/roles/
@@ -137,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf /tmp/infra-platform
-          git clone --depth 1 --branch v0.1.0 "http://gitgard.home.arpa:3000/smittyman/infra-platform.git" /tmp/infra-platform
+          git clone --depth 1 --branch v0.1.3 "http://gitgard.home.arpa:3000/smittyman/infra-platform.git" /tmp/infra-platform
           rm -rf ansible/roles/base
           mkdir -p ansible/roles
           cp -a /tmp/infra-platform/ansible/roles/base ansible/roles/

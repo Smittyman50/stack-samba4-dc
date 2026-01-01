@@ -5,7 +5,7 @@ module "vm_fleet" {
   # For local development/testing (if you check out both repos next to each other):
   # source = "../../../infra-platform/terraform/modules/proxmox_vm_fleet"
 
-  source = "git::http://gitgard.home.arpa:3000/smittyman/infra-platform.git//terraform/modules/proxmox_vm_fleet?ref=v0.1.1"
+  source = "git::http://gitgard.home.arpa:3000/smittyman/infra-platform.git//terraform/modules/proxmox_vm_fleet?ref=v0.1.3"
 
   vm_template_id   = var.vm_template_id
   vm_template_node = var.vm_template_node
