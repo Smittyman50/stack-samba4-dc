@@ -1,0 +1,299 @@
+---
+# sambas_ad_dc role - tasks/main.yml
+#
+# - Ensure DC1 is provisioned AND samba-ad-dc is started before DC2 join
+# - Wait for DC1 LDAP from DC2 BEFORE attempting join
+# - Re-stat sam.ldb after provision/join (the earlier stat becomes stale)
+# - Start samba-ad-dc only when a node is (or just became) a DC
+
+- name: Install required packages
+  ansible.builtin.apt:
+    name: "{{ samba_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure chrony is enabled and running
+  ansible.builtin.service:
+    name: chrony
+    enabled: true
+    state: started
+
+# Ensure local name resolution is consistent for provisioning/join
+- name: Ensure /etc/hosts contains FQDN and shortname mapping
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE SAMBA AD DC HOSTS"
+    block: |
+      {% for h in groups['samba_dc'] | sort %}
+      {{ dc_ips[h] }} {{ h }}.{{ ad_domain }} {{ h }}
+      {% endfor %}
+
+# --- Resolver management (two-stage) ---
+# Determine if this node is already provisioned/joined as a DC
+- name: Check if Samba AD database exists (pre)
+  ansible.builtin.stat:
+    path: /var/lib/samba/private/sam.ldb
+  register: samba_sam_ldb
+
+- name: Check if smb.conf exists (pre-AD)
+  ansible.builtin.stat:
+    path: /etc/samba/smb.conf
+  register: smbconf_stat
+
+- name: Read smb.conf to detect standalone server role
+  ansible.builtin.slurp:
+    path: /etc/samba/smb.conf
+  register: smbconf_slurp
+  when: smbconf_stat.stat.exists
+
+- name: Move existing smb.conf aside if it is not AD DC mode
+  ansible.builtin.command: >
+    mv /etc/samba/smb.conf /etc/samba/smb.conf.pre_ad
+  args:
+    creates: /etc/samba/smb.conf.pre_ad
+  failed_when: false
+  when:
+    - smbconf_stat.stat.exists
+    - (smbconf_slurp.content | b64decode | lower) is search("server role\\s*=\\s*standalone server")
+    - not samba_sam_ldb.stat.exists
+
+# During provision/join, ensure we can always resolve via Technitium (avoid early 127.0.0.1 dependency).
+- name: Disable systemd-resolved (recommended for Samba AD DC)
+  ansible.builtin.service:
+    name: systemd-resolved
+    enabled: false
+    state: stopped
+  when:
+    - samba_manage_resolver | bool
+    - not samba_sam_ldb.stat.exists
+
+- name: Remove symlinked /etc/resolv.conf (if present)
+  ansible.builtin.file:
+    path: /etc/resolv.conf
+    state: absent
+  when:
+    - samba_manage_resolver | bool
+    - not samba_sam_ldb.stat.exists
+
+- name: Install bootstrap /etc/resolv.conf pointing to Technitium during provision/join
+  ansible.builtin.copy:
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible (bootstrap resolver for Samba AD DC provision/join)
+      {% for ip in dns_forwarders %}
+      nameserver {{ ip }}
+      {% endfor %}
+      options timeout:2 attempts:2
+  when:
+    - samba_manage_resolver | bool
+    - not samba_sam_ldb.stat.exists
+
+# --- DC1: Provision ---
+- name: Provision the AD domain on DC1 (first domain controller)
+  ansible.builtin.command: >
+    samba-tool domain provision
+    --realm={{ ad_realm }}
+    --domain={{ ad_netbios }}
+    --server-role=dc
+    --dns-backend=SAMBA_INTERNAL
+    --use-rfc2307
+    --adminpass={{ ad_admin_password }}
+    --option="dns forwarder = {{ dns_forwarders | join(' ') }}"
+  args:
+    creates: /var/lib/samba/private/sam.ldb
+  when:
+    - inventory_hostname == dc1_host
+    - not samba_sam_ldb.stat.exists
+
+# Re-stat after provision (the earlier stat is stale)
+- name: Re-check if Samba AD database exists (post provision/join)
+  ansible.builtin.stat:
+    path: /var/lib/samba/private/sam.ldb
+  register: samba_sam_ldb
+
+# Kerberos config: Samba writes a correct krb5.conf; copy it into place (only when sam.ldb exists)
+- name: Copy Samba-generated krb5.conf into /etc/krb5.conf
+  ansible.builtin.copy:
+    src: /var/lib/samba/private/krb5.conf
+    dest: /etc/krb5.conf
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: samba_sam_ldb.stat.exists
+
+# Disable standalone services that conflict with AD DC mode
+- name: Disable conflicting Samba services (smbd/nmbd/winbind)
+  ansible.builtin.service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop:
+    - smbd
+    - nmbd
+    - winbind
+  ignore_errors: true
+
+# Start DC service on DC1 after provision (or if already a DC)
+- name: Unmask samba-ad-dc (Ubuntu can ship it masked)
+  ansible.builtin.command: systemctl unmask samba-ad-dc
+  changed_when: false
+  failed_when: false
+  when:
+    - inventory_hostname == dc1_host
+    - samba_sam_ldb.stat.exists
+
+- name: Enable and start samba-ad-dc on DC1
+  ansible.builtin.service:
+    name: samba-ad-dc
+    enabled: true
+    state: started
+  when:
+    - inventory_hostname == dc1_host
+    - samba_sam_ldb.stat.exists
+
+- name: Wait for LDAP to be reachable on DC1 locally (389)
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 389
+    timeout: 240
+  when:
+    - inventory_hostname == dc1_host
+    - samba_sam_ldb.stat.exists
+
+# Wait for DC1 DNS to answer locally (internal DNS comes up with samba-ad-dc)
+- name: Wait for DNS to be reachable on DC1 locally (53)
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 53
+    timeout: 240
+  when:
+    - inventory_hostname == dc1_host
+    - samba_sam_ldb.stat.exists
+
+# --- DC2: Join (gated on DC1 readiness) ---
+- name: Wait for DC1 LDAP to be reachable from DC2 (before join)
+  ansible.builtin.wait_for:
+    host: "{{ dc_ips[dc1_host] }}"
+    port: 389
+    timeout: 300
+  when:
+    - inventory_hostname == dc2_host
+    - not samba_sam_ldb.stat.exists
+
+- name: Join DC2 to the domain as an additional DC (target DC1 explicitly)
+  ansible.builtin.command: >
+    samba-tool domain join {{ ad_realm }} DC
+    --dns-backend=SAMBA_INTERNAL
+    --server={{ dc1_host }}.{{ ad_domain }}
+    -U "Administrator%{{ ad_admin_password }}"
+    --option="dns forwarder = {{ dns_forwarders | join(' ') }}"
+  args:
+    creates: /var/lib/samba/private/sam.ldb
+  when:
+    - inventory_hostname == dc2_host
+    - not samba_sam_ldb.stat.exists
+
+# Re-stat after join on DC2
+- name: Re-check if Samba AD database exists (post provision/join)
+  ansible.builtin.stat:
+    path: /var/lib/samba/private/sam.ldb
+  register: samba_sam_ldb
+
+# Start DC service on DC2 after join (or if already a DC)
+- name: Unmask samba-ad-dc (Ubuntu can ship it masked)
+  ansible.builtin.command: systemctl unmask samba-ad-dc
+  changed_when: false
+  failed_when: false
+  when:
+    - inventory_hostname == dc2_host
+    - samba_sam_ldb.stat.exists
+
+- name: Enable and start samba-ad-dc on DC2
+  ansible.builtin.service:
+    name: samba-ad-dc
+    enabled: true
+    state: started
+  when:
+    - inventory_hostname == dc2_host
+    - samba_sam_ldb.stat.exists
+
+- name: Wait for LDAP to be reachable on DC2 locally (389)
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 389
+    timeout: 240
+  when:
+    - inventory_hostname == dc2_host
+    - samba_sam_ldb.stat.exists
+
+# --- Resolver management (final) ---
+# After samba-ad-dc is up, switch resolv.conf to prefer local Samba DNS first, then Technitium forwarders.
+- name: Install final /etc/resolv.conf pointing to local DNS then Technitium
+  ansible.builtin.template:
+    src: resolv.conf.j2
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - samba_manage_resolver | bool
+    - samba_sam_ldb.stat.exists
+
+# --- UPN suffix configuration (DC1 only; now safe because DC1 is up) ---
+- name: Build base DN from ad_domain
+  ansible.builtin.set_fact:
+    ad_base_dn: "{{ 'DC=' + (ad_domain.split('.') | join(',DC=')) }}"
+  when:
+    - inventory_hostname == dc1_host
+    - samba_sam_ldb.stat.exists
+
+- name: Set partitions DN for UPN suffix storage
+  ansible.builtin.set_fact:
+    partitions_dn: "CN=Partitions,CN=Configuration,{{ ad_base_dn }}"
+  when:
+    - inventory_hostname == dc1_host
+    - samba_sam_ldb.stat.exists
+
+- name: Read existing UPN suffixes from sam.ldb
+  ansible.builtin.command: >
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "{{ partitions_dn }}" uPNSuffixes
+  register: upn_suffixes_current
+  changed_when: false
+  when:
+    - inventory_hostname == dc1_host
+    - samba_sam_ldb.stat.exists
+
+- name: Add UPN suffixes if missing
+  ansible.builtin.command: ldbmodify -H /var/lib/samba/private/sam.ldb
+  args:
+    stdin: |
+      dn: {{ partitions_dn }}
+      changetype: modify
+      add: uPNSuffixes
+      uPNSuffixes: {{ item }}
+      -
+  loop: "{{ upn_suffixes | default([]) }}"
+  when:
+    - inventory_hostname == dc1_host
+    - samba_sam_ldb.stat.exists
+    - upn_suffixes_current.stdout is not search('(?im)^uPNSuffixes:\\s*' ~ (item | regex_escape) ~ '\\s*$')
+
+# --- Validation (only after both DCs are up) ---
+- name: Validate replication (runs on DCs; DC2 will show inbound once joined)
+  ansible.builtin.command: samba-tool drs showrepl
+  register: repl_out
+  changed_when: false
+  failed_when: repl_out.rc != 0
+  when: samba_sam_ldb.stat.exists
+
+- name: Validate SRV records on the local DC DNS
+  ansible.builtin.command: "host -t SRV _ldap._tcp.{{ ad_domain }} 127.0.0.1"
+  register: srv_out
+  changed_when: false
+  failed_when: srv_out.rc != 0
+  when: samba_sam_ldb.stat.exists

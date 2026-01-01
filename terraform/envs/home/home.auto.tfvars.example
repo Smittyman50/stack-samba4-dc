@@ -1,0 +1,23 @@
+proxmox_endpoint      = "https://pve01:8006"
+proxmox_tls_insecure  = true
+
+# Store this in terraform.tfvars (NOT committed) or set TF_VAR_proxmox_api_token
+# proxmox_api_token = "user@pve!tokenid=secret"
+
+hosts = {
+  pihole01 = {
+    node         = "pve01"
+    vmid         = 201
+    name         = "pihole01"
+    cpu_cores    = 2
+    memory_mb    = 2048
+    disk_gb      = 20
+    datastore    = "local-lvm"
+    bridge       = "vmbr0"
+    vlan         = 10
+    ipv4_cidr    = "192.168.10.50/24"
+    ipv4_gw      = "192.168.10.1"
+    ansible_user = "ubuntu"
+    groups       = ["dns", "linux"]
+  }
+}

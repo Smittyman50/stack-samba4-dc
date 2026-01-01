@@ -1,0 +1,16 @@
+ad_domain: "ad.home.arpa"
+ad_realm: "AD.HOME.ARPA"
+ad_netbios: "AD"
+
+upn_suffixes:
+  - "home.arpa"
+
+dns_forwarders:
+  - "192.168.3.3"   # Technitium
+
+dc1_host: "runamuck"
+dc2_host: "runabout"
+
+dc_ips:
+  runamuck: "192.168.3.21"
+  runabout: "192.168.3.22"

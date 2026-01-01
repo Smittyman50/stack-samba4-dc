@@ -1,0 +1,5 @@
+---
+- name: Configure home infrastructure
+  hosts: all
+  become: true
+  roles: []

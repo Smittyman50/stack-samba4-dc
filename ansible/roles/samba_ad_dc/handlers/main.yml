@@ -1,0 +1,10 @@
+---
+- name: Restart samba-ad-dc
+  ansible.builtin.service:
+    name: samba-ad-dc
+    state: restarted
+
+- name: Restart chrony
+  ansible.builtin.service:
+    name: chrony
+    state: restarted

@@ -1,0 +1,10 @@
+---
+- name: Configure Samba AD Domain Controllers
+  hosts: samba_dc
+  become: true
+  vars_files:
+    - "{{ inventory_dir }}/group_vars/all.vault.yml"
+    - "{{ inventory_dir }}/group_vars/samba_dc.vault.yml"
+  roles:
+    - base
+    - samba_ad_dc

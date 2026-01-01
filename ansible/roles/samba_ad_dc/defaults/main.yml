@@ -1,0 +1,15 @@
+---
+# Whether to disable systemd-resolved and manage /etc/resolv.conf directly
+samba_manage_resolver: true
+
+# Packages for Ubuntu 22.04 AD DC
+samba_packages:
+  - samba
+  - krb5-user
+  - winbind
+  - smbclient
+  - dnsutils
+  - chrony
+  - acl
+  - attr
+  - ldb-tools

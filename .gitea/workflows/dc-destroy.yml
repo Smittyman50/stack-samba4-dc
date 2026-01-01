@@ -1,0 +1,40 @@
+name: dc-destroy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  destroy:
+    runs-on: linux
+    defaults:
+      run:
+        shell: bash
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_VAR_proxmox_endpoint: ${{ vars.TF_VAR_proxmox_endpoint }}
+      TF_VAR_proxmox_api_token: ${{ secrets.TF_VAR_proxmox_api_token }}
+      TF_VAR_proxmox_tls_insecure: ${{ vars.TF_VAR_proxmox_tls_insecure }}
+      TF_VAR_ssh_public_key: ${{ vars.TF_VAR_ssh_public_key }}
+
+      # MinIO creds for Terraform S3 backend
+      AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+
+    steps:
+      - name: Checkout repository
+        run: |
+          set -euo pipefail
+          rm -rf ./* ./.git || true
+
+          git clone "http://gitgard.home.arpa:3000/smittyman/stack-samba4-dc.git" .
+          git rev-parse --short HEAD
+
+      - name: Terraform init
+        working-directory: terraform/envs/home
+        run: terraform init
+
+      - name: Terraform destroy
+        working-directory: terraform/envs/home
+        run: terraform destroy -auto-approve

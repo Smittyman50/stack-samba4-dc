@@ -1,0 +1,7 @@
+# Managed by Ansible (samba_ad_dc role)
+search {{ ad_domain }} home.arpa
+nameserver 127.0.0.1
+{% for f in dns_forwarders %}
+nameserver {{ f }}
+{% endfor %}
+options timeout:1 attempts:2

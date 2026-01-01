@@ -1,0 +1,7 @@
+---
+roles:
+  - name: base
+    src: "git+ssh://git@gitgard.home.arpa:2222/smittyman/infra-platform.git"
+    scm: git
+    version: "v0.1.0"
+    path: ansible/roles/base
