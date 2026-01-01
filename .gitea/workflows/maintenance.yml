@@ -1,0 +1,104 @@
+name: maintenance
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 3 * * 0"   # Sundays 03:00
+
+jobs:
+  patch:
+    runs-on: linux
+    defaults:
+      run:
+        shell: bash
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_VAR_proxmox_endpoint: ${{ vars.TF_VAR_proxmox_endpoint }}
+      TF_VAR_proxmox_api_token: ${{ secrets.TF_VAR_proxmox_api_token }}
+      TF_VAR_proxmox_tls_insecure: ${{ vars.TF_VAR_proxmox_tls_insecure }}
+      TF_VAR_ssh_public_key: ${{ vars.TF_VAR_ssh_public_key }}
+
+      # MinIO creds for Terraform S3 backend (needed for terraform output)
+      AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+
+      ANSIBLE_CONFIG: ansible.cfg
+      ANSIBLE_HOST_KEY_CHECKING: ${{ vars.ANSIBLE_HOST_KEY_CHECKING }}
+      ANSIBLE_PRIVATE_KEY: ${{ secrets.ANSIBLE_PRIVATE_KEY }}
+      ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+
+    steps:
+      - name: Checkout repository
+        run: |
+          set -euo pipefail
+          rm -rf ./* ./.git || true
+
+          git clone "http://gitgard.home.arpa:3000/smittyman/stack-samba4-dc.git" .
+          git fetch --all --tags --prune
+
+          SHA="${GITHUB_SHA:-${GITEA_SHA:-}}"
+          if [ -n "${SHA}" ]; then
+            echo "Checking out SHA: ${SHA}"
+            git checkout -f "${SHA}"
+          fi
+
+          git rev-parse --short HEAD
+          git log -1 --oneline
+
+      - name: Fetch infra-platform base + patch roles
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/infra-platform
+          git clone --depth 1 --branch v0.1.2 "http://gitgard.home.arpa:3000/smittyman/infra-platform.git" /tmp/infra-platform
+
+          mkdir -p ansible/roles
+          rm -rf ansible/roles/base ansible/roles/patch_linux
+          cp -a /tmp/infra-platform/ansible/roles/base ansible/roles/
+          cp -a /tmp/infra-platform/ansible/roles/patch_linux ansible/roles/
+
+      - name: Verify tools
+        run: |
+          terraform -version
+          ansible --version
+          python3 --version
+
+      - name: Terraform init (for backend access to outputs)
+        working-directory: terraform/envs/home
+        run: terraform init
+
+      - name: Generate Ansible inventory from Terraform output
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/envs/home output -json hosts > /tmp/hosts.json
+
+          python3 terraform/scripts/tfhosts_to_inventory.py \
+            --tf-dir terraform/envs/home \
+            --out ansible/inventories/home/inventory.ini \
+            --init
+
+      - name: Write SSH key and vault password
+        run: |
+          install -m 700 -d ~/.ssh
+          printf "%s\n" "${{ secrets.ANSIBLE_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf "%s\n" "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > /tmp/.vault_pass
+          chmod 600 /tmp/.vault_pass
+
+          touch ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Write all.vault.yml from secret
+        working-directory: ansible
+        run: |
+          set -euo pipefail
+          install -d -m 755 inventories/home/group_vars
+          printf "%s\n" "${{ secrets.ANSIBLE_ALL_VAULT_YML }}" > inventories/home/group_vars/all.vault.yml
+          chmod 600 inventories/home/group_vars/all.vault.yml
+
+      - name: Run Ansible maintenance (patch)
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventories/home/inventory.ini playbooks/maintenance.yml \
+            --vault-password-file /tmp/.vault_pass

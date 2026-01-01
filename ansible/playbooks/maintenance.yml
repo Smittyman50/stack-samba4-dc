@@ -1,0 +1,8 @@
+---
+- name: Patch Linux servers (rolling, one at a time)
+  hosts: samba_dc
+  become: true
+  serial: 1
+  roles:
+    - base
+    - patch_linux
