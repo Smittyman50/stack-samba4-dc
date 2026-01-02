@@ -14,7 +14,7 @@ jobs:
   plan:
     # Run on pushes to non-main branches: validate/plan only (no apply)
     if: ${{ gitea.event_name == 'push' && gitea.ref != 'refs/heads/main' }}
-    runs-on: linux
+    runs-on: [linux, host, tf, ansible]
     defaults:
       run:
         shell: bash
@@ -92,7 +92,7 @@ jobs:
   apply:
     # Run on push to main OR manual run
     if: ${{ (gitea.event_name == 'push' && gitea.ref == 'refs/heads/main') || gitea.event_name == 'workflow_dispatch' }}
-    runs-on: linux
+    runs-on: [linux, host, tf, ansible]
     defaults:
       run:
         shell: bash
