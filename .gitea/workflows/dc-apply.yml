@@ -19,7 +19,7 @@ jobs:
       run:
         shell: bash
     env:
-      TF_IN_AUTATION: "true"
+      TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
       TF_VAR_proxmox_endpoint: ${{ vars.TF_VAR_proxmox_endpoint }}
       TF_VAR_proxmox_api_token: ${{ secrets.TF_VAR_proxmox_api_token }}
