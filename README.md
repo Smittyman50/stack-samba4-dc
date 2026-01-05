@@ -147,5 +147,3 @@ Maintenance:
 - Explicit versioning and upgrades
 - Safe idempotent execution
 - Clear distinction between provisioning and maintenance
-
-If this repository is green, the domain controllers are healthy.
