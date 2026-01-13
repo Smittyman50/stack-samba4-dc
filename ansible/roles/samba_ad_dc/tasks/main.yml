@@ -65,7 +65,8 @@
     samba_inconsistent: "{{ samba_sam_ldb.stat.exists and (not samba_dns_dir.stat.exists) }}"
 
 - name: Wipe Samba state if inconsistent (lab rebuild)
-  ansible.builtin.block:
+  when: samba_inconsistent | bool
+  block:
     - name: Stop samba-ad-dc prior to wipe
       ansible.builtin.service:
         name: samba-ad-dc
@@ -76,11 +77,9 @@
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
-      loop:
+      with_items:
         - /var/lib/samba
         - /var/cache/samba
-        - /var/lib/samba/private
-        - /var/lib/samba/sysvol
 
     - name: Recreate Samba state directories
       ansible.builtin.file:
@@ -89,7 +88,7 @@
         owner: root
         group: root
         mode: "0755"
-      loop:
+      with_items:
         - /var/lib/samba
         - /var/lib/samba/private
         - /var/cache/samba
@@ -108,7 +107,6 @@
       ansible.builtin.set_fact:
         samba_provisioned: false
         samba_inconsistent: false
-  when: samba_inconsistent | bool
 
 # ---- smb.conf handling: move aside any pre-existing smb.conf unless it is already an AD DC config ----
 - name: Check if smb.conf exists (pre-AD)
