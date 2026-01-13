@@ -1,14 +1,12 @@
 ---
 # sambas_ad_dc role - tasks/main.yml
 #
-# Lab-safe Samba AD DC provisioning with hard validation of internal DNS state.
-# Goals:
-# - Deterministic DC1/DC2 selection from inventory (avoids dc1_host/dc2_host drift)
-# - Prevent config poisoning by moving aside smb.conf BEFORE any state detection
-# - In lab mode, wipe/rebuild if internal DNS DB is missing (dns dir is authoritative)
-# - Stop conflicting services BEFORE provision/join
-# - Start samba-ad-dc on DC1 immediately after provision (so DC2 wait_for works)
-# - Validate DNS RPC explicitly (matches your original failure mode)
+# Lab-safe Samba AD DC provisioning using FUNCTIONAL validation:
+# - sam.ldb exists
+# - samba-ad-dc is running
+# - samba-tool dns query works (DNS RPC)
+#
+# This avoids false failures when /var/lib/samba/private/dns is not present on your Samba build.
 
 # ----------------------------
 # Base package/service prep
@@ -26,7 +24,7 @@
     enabled: true
     state: started
 
-# Determine DC1/DC2 deterministically (lab)
+# Deterministic DC1/DC2 selection (lab)
 - name: Determine DC1/DC2 from samba_dc inventory order (lab deterministic)
   ansible.builtin.set_fact:
     dc1_effective: "{{ (groups['samba_dc'] | sort)[0] }}"
@@ -81,31 +79,91 @@
   ignore_errors: true
 
 # ----------------------------------------------------------
-# Detect state (sam.ldb + internal DNS DB)
+# Detect minimal state (sam.ldb)
 # ----------------------------------------------------------
 - name: Check if Samba AD database exists (sam.ldb)
   ansible.builtin.stat:
     path: /var/lib/samba/private/sam.ldb
   register: samba_sam_ldb
 
-- name: Check if Samba internal DNS DB directory exists
-  ansible.builtin.stat:
-    path: /var/lib/samba/private/dns
-  register: samba_dns_dir
-
-- name: Set provisioned fact (AD DB + DNS DB present)
+- name: Set initial provisioned fact (sam.ldb exists)
   ansible.builtin.set_fact:
-    samba_provisioned: "{{ samba_sam_ldb.stat.exists and samba_dns_dir.stat.exists }}"
-
-# Lab rule: if DNS DB is missing, wipe and rebuild
-- name: Set lab wipe flag (wipe if internal DNS DB is missing)
-  ansible.builtin.set_fact:
-    samba_lab_wipe: "{{ not samba_dns_dir.stat.exists }}"
+    samba_has_ad_db: "{{ samba_sam_ldb.stat.exists }}"
 
 # ----------------------------------------------------------
-# Lab wipe/rebuild (only when dns DB missing)
+# Resolver bootstrap during provision/join (Technitium first)
 # ----------------------------------------------------------
-- name: Wipe Samba state if internal DNS DB is missing (lab rebuild)
+- name: Disable systemd-resolved (recommended for Samba AD DC)
+  ansible.builtin.service:
+    name: systemd-resolved
+    enabled: false
+    state: stopped
+  when:
+    - samba_manage_resolver | bool
+    - not samba_has_ad_db | bool
+
+- name: Remove symlinked /etc/resolv.conf (if present)
+  ansible.builtin.file:
+    path: /etc/resolv.conf
+    state: absent
+  when:
+    - samba_manage_resolver | bool
+    - not samba_has_ad_db | bool
+
+- name: Install bootstrap /etc/resolv.conf pointing to Technitium during provision/join
+  ansible.builtin.copy:
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible (bootstrap resolver for Samba AD DC provision/join)
+      {% for ip in dns_forwarders %}
+      nameserver {{ ip }}
+      {% endfor %}
+      options timeout:2 attempts:2
+  when:
+    - samba_manage_resolver | bool
+    - not samba_has_ad_db | bool
+
+# ----------------------------------------------------------
+# LAB WIPE RULE (functional):
+# If sam.ldb exists but DNS RPC is broken, wipe/rebuild.
+# We can only test DNS RPC if samba-ad-dc is running, so:
+# - If sam.ldb exists: try starting samba-ad-dc and test DNS RPC.
+# - If DNS RPC fails: wipe.
+# ----------------------------------------------------------
+- name: Unmask samba-ad-dc (safe no-op)
+  ansible.builtin.command: systemctl unmask samba-ad-dc
+  changed_when: false
+  failed_when: false
+
+- name: Start samba-ad-dc (to enable DNS RPC test if sam.ldb exists)
+  ansible.builtin.service:
+    name: samba-ad-dc
+    enabled: true
+    state: started
+  when: samba_has_ad_db | bool
+
+- name: Wait for LDAP locally (389) if sam.ldb exists
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 389
+    timeout: 180
+  when: samba_has_ad_db | bool
+
+- name: Test Samba DNS RPC (pre-flight)
+  ansible.builtin.command: samba-tool dns query localhost "{{ ad_domain }}" @ ALL -U "Administrator%{{ ad_admin_password }}"
+  register: dnsrpc_precheck
+  changed_when: false
+  failed_when: false
+  when: samba_has_ad_db | bool
+
+- name: Set lab wipe flag (wipe if sam.ldb exists but DNS RPC fails)
+  ansible.builtin.set_fact:
+    samba_lab_wipe: "{{ samba_has_ad_db and (dnsrpc_precheck.rc is defined) and (dnsrpc_precheck.rc != 0) }}"
+
+- name: Wipe Samba state if DNS RPC is broken (lab rebuild)
   when: samba_lab_wipe | bool
   block:
     - name: Stop samba-ad-dc prior to wipe
@@ -148,60 +206,18 @@
         - /var/lib/samba/private
         - /var/cache/samba
 
-# Re-detect state after wipe (or no-op)
+# Re-detect sam.ldb after possible wipe
 - name: Re-check if Samba AD database exists (post wipe)
   ansible.builtin.stat:
     path: /var/lib/samba/private/sam.ldb
   register: samba_sam_ldb
 
-- name: Re-check if Samba internal DNS DB directory exists (post wipe)
-  ansible.builtin.stat:
-    path: /var/lib/samba/private/dns
-  register: samba_dns_dir
-
-- name: Recompute provisioned facts (post wipe)
+- name: Update has_ad_db fact (post wipe)
   ansible.builtin.set_fact:
-    samba_provisioned: "{{ samba_sam_ldb.stat.exists and samba_dns_dir.stat.exists }}"
-    samba_lab_wipe: "{{ not samba_dns_dir.stat.exists }}"
+    samba_has_ad_db: "{{ samba_sam_ldb.stat.exists }}"
 
 # ----------------------------------------------------------
-# Resolver bootstrap during provision/join (Technitium first)
-# ----------------------------------------------------------
-- name: Disable systemd-resolved (recommended for Samba AD DC)
-  ansible.builtin.service:
-    name: systemd-resolved
-    enabled: false
-    state: stopped
-  when:
-    - samba_manage_resolver | bool
-    - not samba_provisioned | bool
-
-- name: Remove symlinked /etc/resolv.conf (if present)
-  ansible.builtin.file:
-    path: /etc/resolv.conf
-    state: absent
-  when:
-    - samba_manage_resolver | bool
-    - not samba_provisioned | bool
-
-- name: Install bootstrap /etc/resolv.conf pointing to Technitium during provision/join
-  ansible.builtin.copy:
-    dest: /etc/resolv.conf
-    owner: root
-    group: root
-    mode: "0644"
-    content: |
-      # Managed by Ansible (bootstrap resolver for Samba AD DC provision/join)
-      {% for ip in dns_forwarders %}
-      nameserver {{ ip }}
-      {% endfor %}
-      options timeout:2 attempts:2
-  when:
-    - samba_manage_resolver | bool
-    - not samba_provisioned | bool
-
-# ----------------------------------------------------------
-# DC1: Provision (only if not provisioned)
+# DC1: Provision (only if sam.ldb missing)
 # ----------------------------------------------------------
 - name: Provision the AD domain on DC1 (first domain controller)
   ansible.builtin.command: >
@@ -214,18 +230,12 @@
     --adminpass={{ ad_admin_password }}
     --option="dns forwarder = {{ dns_forwarders | join(' ') }}"
   args:
-    creates: /var/lib/samba/private/dns
+    creates: /var/lib/samba/private/sam.ldb
   when:
     - inventory_hostname == dc1_effective
-    - not samba_provisioned | bool
+    - not samba_has_ad_db | bool
 
-# Start samba-ad-dc on DC1 immediately after provision so DC2 wait_for works
-- name: Unmask samba-ad-dc on DC1 (post-provision)
-  ansible.builtin.command: systemctl unmask samba-ad-dc
-  changed_when: false
-  failed_when: false
-  when: inventory_hostname == dc1_effective
-
+# Start DC1 immediately after provision so DC2 can join
 - name: Enable and start samba-ad-dc on DC1 (post-provision)
   ansible.builtin.service:
     name: samba-ad-dc
@@ -257,7 +267,7 @@
     timeout: 300
   when:
     - inventory_hostname == dc2_effective
-    - not samba_provisioned | bool
+    - not samba_has_ad_db | bool
 
 - name: Join DC2 to the domain as an additional DC (target DC1 explicitly)
   ansible.builtin.command: >
@@ -267,38 +277,24 @@
     -U "Administrator%{{ ad_admin_password }}"
     --option="dns forwarder = {{ dns_forwarders | join(' ') }}"
   args:
-    creates: /var/lib/samba/private/dns
+    creates: /var/lib/samba/private/sam.ldb
   when:
     - inventory_hostname == dc2_effective
-    - not samba_provisioned | bool
+    - not samba_has_ad_db | bool
 
 # ----------------------------------------------------------
-# Re-detect and validate state after provision/join
+# Kerberos config (only when sam.ldb exists)
 # ----------------------------------------------------------
 - name: Re-check if Samba AD database exists (post provision/join)
   ansible.builtin.stat:
     path: /var/lib/samba/private/sam.ldb
   register: samba_sam_ldb
 
-- name: Re-check if Samba internal DNS DB directory exists (post provision/join)
-  ansible.builtin.stat:
-    path: /var/lib/samba/private/dns
-  register: samba_dns_dir
-
-- name: Update provisioned fact (post provision/join)
-  ansible.builtin.set_fact:
-    samba_provisioned: "{{ samba_sam_ldb.stat.exists and samba_dns_dir.stat.exists }}"
-
-- name: Fail if AD state is not fully provisioned (lab fail-fast)
+- name: Fail if sam.ldb is missing after provision/join
   ansible.builtin.fail:
-    msg: >
-      Samba AD is not fully provisioned. sam.ldb={{ samba_sam_ldb.stat.exists }},
-      dns_dir={{ samba_dns_dir.stat.exists }}. Provision/join did not complete successfully.
-  when: not samba_provisioned | bool
+    msg: "Samba AD database sam.ldb is missing after provision/join."
+  when: not samba_sam_ldb.stat.exists
 
-# ----------------------------------------------------------
-# Kerberos config
-# ----------------------------------------------------------
 - name: Copy Samba-generated krb5.conf into /etc/krb5.conf
   ansible.builtin.copy:
     src: /var/lib/samba/private/krb5.conf
@@ -307,50 +303,35 @@
     owner: root
     group: root
     mode: "0644"
-  when: samba_provisioned | bool
+  when: samba_sam_ldb.stat.exists
 
 # ----------------------------------------------------------
-# Start AD DC service (both DCs)
+# Start AD DC service (both DCs) and validate functionally
 # ----------------------------------------------------------
-- name: Unmask samba-ad-dc (Ubuntu can ship it masked)
-  ansible.builtin.command: systemctl unmask samba-ad-dc
-  changed_when: false
-  failed_when: false
-  when: samba_provisioned | bool
-
 - name: Enable and start samba-ad-dc
   ansible.builtin.service:
     name: samba-ad-dc
     enabled: true
     state: started
-  when: samba_provisioned | bool
 
-# ----------------------------------------------------------
-# Service readiness (both DCs)
-# ----------------------------------------------------------
 - name: Wait for LDAP to be reachable locally (389)
   ansible.builtin.wait_for:
     host: 127.0.0.1
     port: 389
     timeout: 240
-  when: samba_provisioned | bool
 
 - name: Wait for DNS to be reachable locally (53)
   ansible.builtin.wait_for:
     host: 127.0.0.1
     port: 53
     timeout: 240
-  when: samba_provisioned | bool
 
-# ----------------------------------------------------------
-# Critical validation: DNS RPC
-# ----------------------------------------------------------
+# THIS is now the definitive "provisioned" test (not a filesystem path)
 - name: Validate Samba DNS RPC works (local)
-  ansible.builtin.command: samba-tool dns query localhost "{{ ad_domain }}" @ ALL
+  ansible.builtin.command: samba-tool dns query localhost "{{ ad_domain }}" @ ALL -U "Administrator%{{ ad_admin_password }}"
   register: dnsrpc_check
   changed_when: false
   failed_when: dnsrpc_check.rc != 0
-  when: samba_provisioned | bool
 
 # ----------------------------------------------------------
 # Resolver finalization
@@ -362,35 +343,27 @@
     owner: root
     group: root
     mode: "0644"
-  when:
-    - samba_manage_resolver | bool
-    - samba_provisioned | bool
+  when: samba_manage_resolver | bool
 
 # ----------------------------------------------------------
-# UPN suffix configuration (DC1 only; safe after DC1 up)
+# UPN suffix configuration (DC1 only)
 # ----------------------------------------------------------
 - name: Build base DN from ad_domain
   ansible.builtin.set_fact:
     ad_base_dn: "{{ 'DC=' + (ad_domain.split('.') | join(',DC=')) }}"
-  when:
-    - inventory_hostname == dc1_effective
-    - samba_provisioned | bool
+  when: inventory_hostname == dc1_effective
 
 - name: Set partitions DN for UPN suffix storage
   ansible.builtin.set_fact:
     partitions_dn: "CN=Partitions,CN=Configuration,{{ ad_base_dn }}"
-  when:
-    - inventory_hostname == dc1_effective
-    - samba_provisioned | bool
+  when: inventory_hostname == dc1_effective
 
 - name: Read existing UPN suffixes from sam.ldb
   ansible.builtin.command: >
     ldbsearch -H /var/lib/samba/private/sam.ldb -b "{{ partitions_dn }}" uPNSuffixes
   register: upn_suffixes_current
   changed_when: false
-  when:
-    - inventory_hostname == dc1_effective
-    - samba_provisioned | bool
+  when: inventory_hostname == dc1_effective
 
 - name: Add UPN suffixes if missing
   ansible.builtin.command: ldbmodify -H /var/lib/samba/private/sam.ldb
@@ -404,7 +377,6 @@
   loop: "{{ upn_suffixes | default([]) }}"
   when:
     - inventory_hostname == dc1_effective
-    - samba_provisioned | bool
     - upn_suffixes_current.stdout is not search('(?im)^uPNSuffixes:\\s*' ~ (item | regex_escape) ~ '\\s*$')
 
 # ----------------------------------------------------------
@@ -415,11 +387,10 @@
   register: repl_out
   changed_when: false
   failed_when: repl_out.rc != 0
-  when: samba_provisioned | bool
 
 - name: Validate SRV records on the local DC DNS
   ansible.builtin.command: "host -t SRV _ldap._tcp.{{ ad_domain }} 127.0.0.1"
   register: srv_out
   changed_when: false
   failed_when: srv_out.rc != 0
-  when: samba_provisioned | bool
+
