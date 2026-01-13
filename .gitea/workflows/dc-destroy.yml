@@ -5,7 +5,7 @@ on:
 
 jobs:
   destroy:
-    runs-on: linux
+    runs-on: [linux, host, tf, ansible]
     defaults:
       run:
         shell: bash
