@@ -13,6 +13,7 @@ This repository answers one question:
 What does it take to stand up and operate Samba4 domain controllers in this environment?
 
 It is:
+
 - Environment-specific
 - Fully automated
 - Safe to re-run
@@ -56,6 +57,7 @@ flowchart TD
 ```
 
 Flow:
+
 1. Terraform provisions Proxmox virtual machines
 2. Terraform outputs are converted into Ansible inventory
 3. Ansible applies:
@@ -120,10 +122,12 @@ Upgrades occur only when the platform version is intentionally bumped.
 Secrets are never committed.
 
 They are injected at runtime using:
+
 - Gitea secrets
 - Ansible Vault
 
 Examples include:
+
 - Proxmox API credentials
 - SSH private keys
 - Vault passwords
@@ -133,9 +137,11 @@ Examples include:
 ## Operational Usage
 
 Initial deployment:
+
 - Push to main branch triggers dc-apply workflow
 
 Maintenance:
+
 - Manually trigger maintenance workflow
 - Or allow scheduled patching
 
