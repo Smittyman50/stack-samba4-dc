@@ -14,7 +14,7 @@ hosts = {
     ipv4_cidr     = "192.168.3.21/24"
     ipv4_gw       = "192.168.3.1"
     ansible_user  = "ubuntu"
-    groups        = ["linux", "samba_dc"]
+    groups        = ["linux", "compute_vm", "samba_dc"]
   }
 
     runabout = {
@@ -29,6 +29,6 @@ hosts = {
     ipv4_cidr     = "192.168.3.22/24"
     ipv4_gw       = "192.168.3.1"
     ansible_user  = "ubuntu"
-    groups        = ["linux", "samba_dc"]
+    groups        = ["linux", "compute_vm", "samba_dc"]
   }
 }
