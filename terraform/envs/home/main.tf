@@ -10,5 +10,4 @@ module "vm_fleet" {
   vm_template_id   = var.vm_template_id
   vm_template_node = var.vm_template_node
   ssh_public_key   = var.ssh_public_key
-  hosts            = var.hosts
 }
