@@ -5,6 +5,7 @@ on:
 
 jobs:
   destroy:
+    if: ${{ inputs.confirm == 'DESTROY' }}
     runs-on: [linux, host, tf, ansible]
     defaults:
       run:

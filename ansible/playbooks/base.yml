@@ -1,6 +1,6 @@
 ---
 - name: Apply baseline configuration
-  hosts: all
+  hosts: "{{ target_group | default('samba_dc') }}"
   become: true
   vars_files:
     - "{{ inventory_dir }}/group_vars/all.vault.yml"
