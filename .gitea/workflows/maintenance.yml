@@ -68,15 +68,27 @@ jobs:
         working-directory: terraform/envs/home
         run: terraform init
 
-      - name: Generate Ansible inventory from Terraform output
+      - name: Refresh shared inventory (stack-inventory)
         run: |
           set -euo pipefail
-          terraform -chdir=terraform/envs/home output -json hosts > /tmp/hosts.json
+          rm -rf /tmp/stack-inventory
+          git clone "http://gitgard.home.arpa:3000/smittyman/stack-inventory.git" /tmp/stack-inventory
 
-          python3 terraform/scripts/tfhosts_to_inventory.py \
-            --tf-dir terraform/envs/home \
+          terraform -chdir=/tmp/stack-inventory/terraform/envs/home init -reconfigure
+          terraform -chdir=/tmp/stack-inventory/terraform/envs/home apply -auto-approve
+
+          python3 /tmp/stack-inventory/terraform/scripts/tfhosts_to_inventory.py \
+            --tf-dir /tmp/stack-inventory/terraform/envs/home \
             --out ansible/inventories/home/inventory.ini \
             --init
+
+      - name: Sync shared group_vars from stack-inventory
+        run: |
+          set -euo pipefail
+          install -d -m 755 ansible/inventories/home/group_vars
+          if [ -d /tmp/stack-inventory/ansible/inventories/home/group_vars ]; then
+            cp -a /tmp/stack-inventory/ansible/inventories/home/group_vars/*.yml ansible/inventories/home/group_vars/ 2>/dev/null || true
+          fi
 
       - name: Write SSH key and vault password
         run: |
