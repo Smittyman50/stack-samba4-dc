@@ -3,7 +3,7 @@ name: maintenance
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "0 3 * * 0"   # Sundays 03:00
+    - cron: "0 8 * * 0"   # Sundays 03:00
 
 jobs:
   patch:
