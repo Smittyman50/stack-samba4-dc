@@ -101,11 +101,6 @@ jobs:
           touch ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Extract vault password
-        run: |
-          printf "%s\n" "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > ~/.vault_pass
-          chmod 600 ~/.vault_pass
-
       - name: Write all.vault.yml from secret
         working-directory: ansible
         run: |
