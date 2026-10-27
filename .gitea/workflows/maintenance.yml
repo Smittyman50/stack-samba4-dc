@@ -95,13 +95,16 @@ jobs:
           install -m 700 -d ~/.ssh
           printf "%s\n" "${{ secrets.ANSIBLE_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          printf "%s\n" "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > ~/.vault_pass
-          chmod 600 ~/.vault_pass
           printf "%s\n" "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > /tmp/.vault_pass
           chmod 600 /tmp/.vault_pass
 
           touch ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+
+      - name: Extract vault password
+        run: |
+          printf "%s\n" "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > ~/.vault_pass
+          chmod 600 ~/.vault_pass
 
       - name: Write all.vault.yml from secret
         working-directory: ansible
