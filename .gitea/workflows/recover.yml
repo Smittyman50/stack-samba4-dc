@@ -1,8 +1,0 @@
-# .gitea/workflows/recover.yml
-name: recover
-on: workflow_dispatch
-jobs:
-  dump:
-    runs-on: linux   # match a label your runners have
-    steps:
-      - run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" | base64
